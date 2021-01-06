@@ -22,3 +22,5 @@ DEFAULT_MANUFACTURER = "Panasonic"
 DEFAULT_MODEL_NUMBER = "Panasonic Viera"
 
 ERROR_INVALID_PIN_CODE = "invalid_pin_code"
+
+TURN_ON_GRACE_TIME = 15

@@ -1,8 +1,9 @@
 """The Panasonic Viera integration."""
+import time
 import asyncio
 from functools import partial
 import logging
-from urllib.request import URLError
+from urllib.request import URLError, HTTPError
 
 from panasonic_viera import EncryptionRequired, Keys, RemoteControl, SOAPError
 import voluptuous as vol
@@ -23,6 +24,7 @@ from .const import (
     DEFAULT_NAME,
     DEFAULT_PORT,
     DOMAIN,
+    TURN_ON_GRACE_TIME,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -160,9 +162,15 @@ class Remote:
 
         self._control = None
 
+        self._turn_on_in_progress = False
+        self._turn_on_timestamp = 0
+
     async def async_create_remote_control(self, during_setup=False):
         """Create remote control."""
         control_existed = self._control is not None
+        if control_existed:
+            return
+
         try:
             params = {}
             if self._app_id and self._encryption_key:
@@ -173,7 +181,6 @@ class Remote:
                 partial(RemoteControl, self._host, self._port, **params)
             )
 
-            self.state = STATE_ON
             self.available = True
         except (TimeoutError, URLError, SOAPError, OSError) as err:
             if control_existed or during_setup:
@@ -181,13 +188,13 @@ class Remote:
 
             self._control = None
             self.state = STATE_OFF
-            self.available = self._on_action is not None
+            # self.available = self._on_action is not None
         except Exception as err:  # pylint: disable=broad-except
             if control_existed or during_setup:
                 _LOGGER.exception("An unknown error occurred: %s", err)
                 self._control = None
                 self.state = STATE_OFF
-                self.available = self._on_action is not None
+                # self.available = self._on_action is not None
 
     async def async_update(self):
         """Update device data."""
@@ -201,6 +208,9 @@ class Remote:
         """Retrieve the latest data."""
         self.muted = self._control.get_mute()
         self.volume = self._control.get_volume() / 100
+        # If we can get value from the TV, it is on
+        self.state = STATE_ON
+        self._turn_on_in_progress = False
 
     async def async_send_key(self, key):
         """Send a key to the TV and handle exceptions."""
@@ -216,9 +226,13 @@ class Remote:
         if self._on_action is not None:
             await self._on_action.async_run(context=context)
             self.state = STATE_ON
+            self._turn_on_in_progress = True
+            self._turn_on_timestamp = time.time()
         elif self.state != STATE_ON:
             await self.async_send_key(Keys.power)
             self.state = STATE_ON
+            self._turn_on_in_progress = True
+            self._turn_on_timestamp = time.time()
 
     async def async_turn_off(self):
         """Turn off the TV."""
@@ -257,11 +271,16 @@ class Remote:
             _LOGGER.error(
                 "The connection couldn't be encrypted. Please reconfigure your TV"
             )
-        except (TimeoutError, URLError, SOAPError, OSError):
+        except (TimeoutError, URLError, SOAPError, OSError) as err:
+            if self._turn_on_in_progress:
+                if time.time() - self._turn_on_timestamp < TURN_ON_GRACE_TIME:
+                    return
+                else:
+                    self._turn_on_in_progress = False
             self.state = STATE_OFF
-            self.available = self._on_action is not None
+            # self.available = self._on_action is not None
             await self.async_create_remote_control()
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.exception("An unknown error occurred: %s", err)
             self.state = STATE_OFF
-            self.available = self._on_action is not None
+            # self.available = self._on_action is not None
